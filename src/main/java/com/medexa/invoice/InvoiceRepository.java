@@ -1,0 +1,11 @@
+package com.medexa.invoice;
+
+import java.util.Optional;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface InvoiceRepository extends JpaRepository<Invoice, Long> {
+
+    Optional<Invoice> findByOrderId(Long orderId);
+
+    Optional<Invoice> findByInvoiceNumber(String invoiceNumber);
+}

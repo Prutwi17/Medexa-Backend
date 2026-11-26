@@ -9,6 +9,8 @@ import com.medexa.checkout.dto.CheckoutDtos.CreateCheckoutSessionRequest;
 import com.medexa.checkout.service.CheckoutService;
 import com.medexa.common.api.ApiResponse;
 import com.medexa.config.OpenApiConfig;
+import com.medexa.payment.dto.PaymentDtos.PaymentFailureRequest;
+import com.medexa.payment.dto.PaymentDtos.PaymentResponse;
 import com.medexa.security.MedexaUserPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -71,6 +73,18 @@ public class CustomerCheckoutController {
         return ApiResponse.ok(
                 "Payment verified and pharmacy orders placed.",
                 checkoutService.confirmPayment(principal.getUserId(), checkoutReference, request)
+        );
+    }
+
+    @PostMapping("/sessions/{checkoutReference}/payment-failed")
+    @Operation(summary = "Record a payment failure callback from Razorpay Checkout and optionally release stock")
+    public ApiResponse<PaymentResponse> recordFailure(
+            @AuthenticationPrincipal MedexaUserPrincipal principal,
+            @PathVariable String checkoutReference,
+            @Valid @RequestBody PaymentFailureRequest request) {
+        return ApiResponse.ok(
+                "Payment failure recorded.",
+                checkoutService.recordClientPaymentFailure(principal.getUserId(), checkoutReference, request)
         );
     }
 

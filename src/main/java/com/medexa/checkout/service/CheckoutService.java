@@ -39,21 +39,26 @@ import com.medexa.pharmacy.PharmacyDeliveryZone;
 import com.medexa.pharmacy.PharmacyDeliveryZoneRepository;
 import com.medexa.pharmacy.VerificationStatus;
 import com.medexa.prescription.service.PrescriptionService;
+import com.medexa.invoice.service.InvoiceService;
+import com.medexa.payment.Payment;
+import com.medexa.payment.PaymentEventRepository;
+import com.medexa.payment.PaymentRepository;
+import com.medexa.payment.PaymentStatus;
+import com.medexa.payment.dto.PaymentDtos.PaymentFailureRequest;
+import com.medexa.payment.dto.PaymentDtos.PaymentResponse;
+import com.medexa.payment.dto.PaymentDtos.PaymentVerifyRequest;
+import com.medexa.payment.service.PaymentLedgerService;
+import com.medexa.payment.service.RazorpayGatewayClient;
+import com.medexa.payment.service.RazorpayGatewayClient.GatewayOrderResult;
+import com.medexa.payment.service.RazorpayGatewayClient.GatewayPaymentSnapshot;
 import com.medexa.user.AccountStatus;
 import com.medexa.user.User;
 import com.medexa.user.UserRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -85,6 +90,11 @@ public class CheckoutService {
     private final InventoryService inventoryService;
     private final CouponService couponService;
     private final OrderService orderService;
+    private final PaymentRepository paymentRepository;
+    private final PaymentEventRepository paymentEventRepository;
+    private final PaymentLedgerService paymentLedgerService;
+    private final RazorpayGatewayClient razorpayGatewayClient;
+    private final InvoiceService invoiceService;
     private final CheckoutProperties checkoutProperties;
     private final RazorpayProperties razorpayProperties;
 
@@ -225,9 +235,11 @@ public class CheckoutService {
                 .expiresAt(expiresAt)
                 .build();
 
-        String gatewayOrderId = createGatewayOrderIdIfConfigured(checkoutRef, plan.grandTotal());
-        session.setRazorpayOrderId(gatewayOrderId);
+        long amountPaise = plan.grandTotal().multiply(ONE_HUNDRED).longValue();
+        GatewayOrderResult gatewayOrder = razorpayGatewayClient.createOrder(checkoutRef, amountPaise, "INR");
+        session.setRazorpayOrderId(gatewayOrder.orderId());
         checkoutRepository.save(session);
+        paymentLedgerService.createPaymentRecord(session, gatewayOrder.orderId(), session.getIdempotencyKey());
 
         String formattedAddress = formatFullAddress(plan.address());
 
@@ -359,6 +371,22 @@ public class CheckoutService {
             throw new BadRequestException("Gateway order reference does not match this checkout session.");
         }
 
+        Payment payment = paymentRepository.findByCheckoutSessionIdForUpdate(session.getId())
+                .orElseGet(() -> paymentLedgerService.createPaymentRecord(
+                        session, session.getRazorpayOrderId(), session.getIdempotencyKey()
+                ));
+
+        if (payment.getStatus() == PaymentStatus.CAPTURED) {
+            finalizeCapturedPayment(
+                    session,
+                    payment,
+                    payment.getGatewayPaymentId(),
+                    request.razorpaySignature(),
+                    "SIGNATURE"
+            );
+            return buildCheckoutResponse(session);
+        }
+
         boolean validSignature = RazorpaySignatureUtils.verifyPaymentSignature(
                 request.razorpayOrderId(),
                 request.razorpayPaymentId(),
@@ -366,53 +394,467 @@ public class CheckoutService {
                 razorpayProperties.getKeySecret()
         );
         if (!validSignature) {
+            paymentLedgerService.recordEvent(
+                    payment,
+                    "CLIENT_CALLBACK",
+                    "SIGNATURE_INVALID",
+                    payment.getStatus(),
+                    payment.getStatus(),
+                    request.razorpayPaymentId(),
+                    "Rejected tampered or invalid Razorpay payment signature"
+            );
             throw new BadRequestException("Payment signature verification failed.");
         }
 
-        // Commit reserved stock cleanly (idempotent if already committed)
-        inventoryService.commitReservations(session.getCheckoutReference(), customerId);
-
-        session.setStatus(CheckoutStatus.PAID);
-        session.setPaymentReference(request.razorpayPaymentId().trim());
-        session.setPaidAt(now);
-        checkoutRepository.save(session);
-
-        couponService.incrementUsage(session.getCouponCode());
-
-        List<Order> childOrders = orderRepository.findByCheckoutSessionIdOrderByIdAsc(session.getId());
-        for (Order child : childOrders) {
-            OrderStatus prev = child.getStatus();
-            child.setStatus(OrderStatus.PLACED);
-            child.setPaymentStatus(OrderPaymentStatus.PAID);
-            child.setPlacedAt(now);
-            orderRepository.save(child);
-
-            orderService.recordStatusChange(
-                    child,
-                    prev,
-                    OrderStatus.PLACED,
-                    customerId,
-                    "CUSTOMER",
-                    session.getCustomer().getFullName(),
-                    "Verified payment " + request.razorpayPaymentId() + " confirmed"
-            );
-
-            List<OrderItem> orderItems = orderItemRepository.findByOrderIdWithRefs(child.getId());
-            for (OrderItem oi : orderItems) {
-                if (oi.isPrescriptionRequired() && oi.getPrescription() != null) {
-                    prescriptionService.linkPrescriptionToOrder(
-                            customerId,
-                            oi.getMedicine().getId(),
-                            oi.getPrescription().getId(),
-                            child.getId(),
-                            child.getOrderNumber()
-                    );
-                }
-            }
+        GatewayPaymentSnapshot snapshot = razorpayGatewayClient.fetchPayment(request.razorpayPaymentId().trim());
+        long expectedPaise = session.getGrandTotal().multiply(ONE_HUNDRED).longValue();
+        if (snapshot.orderId() != null && !snapshot.orderId().isBlank()
+                && !snapshot.orderId().equals(session.getRazorpayOrderId())) {
+            throw new BusinessRuleException("Gateway payment order ID mismatch.");
+        }
+        if (snapshot.amountPaise() > 0 && snapshot.amountPaise() != expectedPaise) {
+            throw new BusinessRuleException("Gateway paid amount does not match server checkout total.");
         }
 
-        cartItemRepository.deleteByCustomerId(customerId);
+        String gatewayStatus = snapshot.status() != null ? snapshot.status().toLowerCase() : "captured";
+        payment.setLastGatewayStatus(gatewayStatus);
+        payment.setGatewayPaymentId(request.razorpayPaymentId().trim());
+        payment.setGatewaySignature(request.razorpaySignature().trim());
+
+        if ("failed".equals(gatewayStatus)) {
+            markPaymentFailedInternal(
+                    session,
+                    payment,
+                    snapshot.errorCode(),
+                    snapshot.errorDescription() != null ? snapshot.errorDescription() : "Payment failed at gateway",
+                    "CLIENT_CALLBACK",
+                    true
+            );
+            throw new BusinessRuleException("Payment failed at Razorpay gateway. Reserved stock released.");
+        }
+
+        if ("authorized".equals(gatewayStatus) || "created".equals(gatewayStatus)) {
+            PaymentStatus prev = payment.getStatus();
+            PaymentStatus next = "authorized".equals(gatewayStatus) ? PaymentStatus.AUTHORIZED : PaymentStatus.PENDING;
+            payment.setStatus(next);
+            if (next == PaymentStatus.AUTHORIZED) {
+                payment.setAuthorizedAt(now);
+            }
+            paymentRepository.save(payment);
+            paymentLedgerService.recordEvent(
+                    payment,
+                    "CLIENT_CALLBACK",
+                    "PAYMENT_" + next.name(),
+                    prev,
+                    next,
+                    request.razorpayPaymentId(),
+                    "Awaiting final Razorpay capture before confirming orders"
+            );
+            return buildCheckoutResponse(session);
+        }
+
+        if (!"captured".equals(gatewayStatus)) {
+            throw new BusinessRuleException("Unsupported gateway payment status: " + gatewayStatus);
+        }
+
+        finalizeCapturedPayment(
+                session,
+                payment,
+                request.razorpayPaymentId().trim(),
+                request.razorpaySignature().trim(),
+                "SIGNATURE"
+        );
         return buildCheckoutResponse(session);
+    }
+
+    @Transactional
+    public PaymentResponse recordClientPaymentFailure(
+            Long customerId,
+            String checkoutReference,
+            PaymentFailureRequest request) {
+        CheckoutSession session = checkoutRepository.findByCheckoutReferenceForUpdate(checkoutReference)
+                .orElseThrow(() -> new ResourceNotFoundException("Checkout session not found."));
+        if (!session.getCustomer().getId().equals(customerId)) {
+            throw new ResourceNotFoundException("Checkout session not found.");
+        }
+
+        Payment payment = paymentRepository.findByCheckoutSessionIdForUpdate(session.getId())
+                .orElseGet(() -> paymentLedgerService.createPaymentRecord(
+                        session, session.getRazorpayOrderId(), session.getIdempotencyKey()
+                ));
+
+        if (payment.getStatus() == PaymentStatus.CAPTURED || session.getStatus() == CheckoutStatus.PAID) {
+            return PaymentResponse.from(
+                    payment,
+                    paymentEventRepository.findByPaymentIdOrderByCreatedAtAscIdAsc(payment.getId())
+            );
+        }
+
+        if (request.razorpayPaymentId() != null && !request.razorpayPaymentId().isBlank()) {
+            payment.setGatewayPaymentId(request.razorpayPaymentId().trim());
+        }
+        markPaymentFailedInternal(
+                session,
+                payment,
+                request.errorCode(),
+                request.errorDescription(),
+                "CLIENT_CALLBACK",
+                Boolean.TRUE.equals(request.releaseStock())
+        );
+        return PaymentResponse.from(
+                payment,
+                paymentEventRepository.findByPaymentIdOrderByCreatedAtAscIdAsc(payment.getId())
+        );
+    }
+
+    @Transactional
+    public PaymentResponse verifyPaymentFromServer(
+            Long customerId,
+            String paymentReference,
+            PaymentVerifyRequest request) {
+        Payment lockedPayment = paymentRepository.findByPaymentReferenceForUpdate(paymentReference)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment record not found."));
+        if (!lockedPayment.getCustomer().getId().equals(customerId)) {
+            throw new ResourceNotFoundException("Payment record not found.");
+        }
+
+        if (lockedPayment.getStatus() == PaymentStatus.CAPTURED
+                || lockedPayment.getStatus() == PaymentStatus.REFUNDED
+                || lockedPayment.getStatus() == PaymentStatus.PARTIALLY_REFUNDED) {
+            return PaymentResponse.from(
+                    lockedPayment,
+                    paymentEventRepository.findByPaymentIdOrderByCreatedAtAscIdAsc(lockedPayment.getId())
+            );
+        }
+
+        CheckoutSession session = checkoutRepository
+                .findByCheckoutReferenceForUpdate(lockedPayment.getCheckoutSession().getCheckoutReference())
+                .orElseThrow(() -> new ResourceNotFoundException("Checkout session not found."));
+
+        String requestedPaymentId = request != null && request.razorpayPaymentId() != null
+                && !request.razorpayPaymentId().isBlank()
+                ? request.razorpayPaymentId().trim()
+                : lockedPayment.getGatewayPaymentId();
+
+        GatewayPaymentSnapshot snapshot = (requestedPaymentId != null && !requestedPaymentId.isBlank())
+                ? razorpayGatewayClient.fetchPayment(requestedPaymentId)
+                : razorpayGatewayClient.fetchLatestPaymentForOrder(lockedPayment.getGatewayOrderId());
+
+        if (snapshot == null || snapshot.paymentId() == null) {
+            PaymentStatus prev = lockedPayment.getStatus();
+            lockedPayment.setStatus(PaymentStatus.PENDING);
+            lockedPayment.setVerificationMethod("SERVER_FETCH");
+            paymentRepository.save(lockedPayment);
+            paymentLedgerService.recordEvent(
+                    lockedPayment,
+                    "SERVER_VERIFY",
+                    "PAYMENT_PENDING",
+                    prev,
+                    PaymentStatus.PENDING,
+                    lockedPayment.getGatewayOrderId(),
+                    "No captured payment settled at gateway yet"
+            );
+            return PaymentResponse.from(
+                    lockedPayment,
+                    paymentEventRepository.findByPaymentIdOrderByCreatedAtAscIdAsc(lockedPayment.getId())
+            );
+        }
+
+        String gatewayStatus = snapshot.status() != null ? snapshot.status().toLowerCase() : "created";
+        lockedPayment.setGatewayPaymentId(snapshot.paymentId());
+        lockedPayment.setLastGatewayStatus(gatewayStatus);
+        lockedPayment.setVerificationMethod("SERVER_FETCH");
+
+        if ("captured".equals(gatewayStatus)) {
+            finalizeCapturedPayment(session, lockedPayment, snapshot.paymentId(), null, "SERVER_FETCH");
+        } else if ("authorized".equals(gatewayStatus)) {
+            PaymentStatus prev = lockedPayment.getStatus();
+            lockedPayment.setStatus(PaymentStatus.AUTHORIZED);
+            lockedPayment.setAuthorizedAt(Instant.now());
+            paymentRepository.save(lockedPayment);
+            paymentLedgerService.recordEvent(
+                    lockedPayment,
+                    "SERVER_VERIFY",
+                    "PAYMENT_AUTHORIZED",
+                    prev,
+                    PaymentStatus.AUTHORIZED,
+                    snapshot.paymentId(),
+                    "Payment authorized at gateway; awaiting capture"
+            );
+        } else if ("failed".equals(gatewayStatus)) {
+            markPaymentFailedInternal(
+                    session,
+                    lockedPayment,
+                    snapshot.errorCode(),
+                    snapshot.errorDescription() != null ? snapshot.errorDescription() : "Payment failed at gateway",
+                    "SERVER_VERIFY",
+                    session.getStatus() == CheckoutStatus.AWAITING_PAYMENT
+            );
+        }
+
+        return PaymentResponse.from(
+                lockedPayment,
+                paymentEventRepository.findByPaymentIdOrderByCreatedAtAscIdAsc(lockedPayment.getId())
+        );
+    }
+
+    @Transactional
+    public String finalizeCapturedFromWebhook(
+            String gatewayOrderId,
+            String gatewayPaymentId,
+            long paidAmountPaise,
+            String eventId) {
+        Optional<Payment> payOpt = paymentRepository.findByGatewayOrderIdForUpdate(gatewayOrderId);
+        if (payOpt.isEmpty()) {
+            return "No internal payment found for gateway order " + gatewayOrderId;
+        }
+        Payment payment = payOpt.get();
+        if (payment.getStatus() == PaymentStatus.CAPTURED
+                || payment.getStatus() == PaymentStatus.REFUNDED
+                || payment.getStatus() == PaymentStatus.PARTIALLY_REFUNDED) {
+            return "IGNORED_OUT_OF_ORDER: Payment already captured";
+        }
+        CheckoutSession session = checkoutRepository
+                .findByCheckoutReferenceForUpdate(payment.getCheckoutSession().getCheckoutReference())
+                .orElseThrow();
+        long expectedPaise = session.getGrandTotal().multiply(ONE_HUNDRED).longValue();
+        if (paidAmountPaise > 0 && paidAmountPaise != expectedPaise) {
+            paymentLedgerService.recordEvent(
+                    payment,
+                    "RAZORPAY_WEBHOOK",
+                    "AMOUNT_MISMATCH",
+                    payment.getStatus(),
+                    payment.getStatus(),
+                    eventId,
+                    "Webhook captured amount " + paidAmountPaise + " != expected " + expectedPaise
+            );
+            return "FAILED: Captured amount mismatch";
+        }
+
+        finalizeCapturedPayment(session, payment, gatewayPaymentId, null, "WEBHOOK");
+        return "PROCESSED";
+    }
+
+    @Transactional
+    public String markAuthorizedFromWebhook(
+            String gatewayOrderId,
+            String gatewayPaymentId,
+            String eventId) {
+        Optional<Payment> payOpt = paymentRepository.findByGatewayOrderIdForUpdate(gatewayOrderId);
+        if (payOpt.isEmpty()) {
+            return "No internal payment found for gateway order " + gatewayOrderId;
+        }
+        Payment payment = payOpt.get();
+        if (payment.getStatus() == PaymentStatus.CAPTURED
+                || payment.getStatus() == PaymentStatus.REFUNDED
+                || payment.getStatus() == PaymentStatus.PARTIALLY_REFUNDED) {
+            paymentLedgerService.recordEvent(
+                    payment,
+                    "RAZORPAY_WEBHOOK",
+                    "IGNORED_OUT_OF_ORDER",
+                    payment.getStatus(),
+                    payment.getStatus(),
+                    eventId,
+                    "Out-of-order payment.authorized ignored because payment is already " + payment.getStatus()
+            );
+            return "IGNORED_OUT_OF_ORDER";
+        }
+        PaymentStatus prev = payment.getStatus();
+        payment.setGatewayPaymentId(gatewayPaymentId);
+        payment.setLastGatewayStatus("authorized");
+        payment.setStatus(PaymentStatus.AUTHORIZED);
+        payment.setAuthorizedAt(Instant.now());
+        paymentRepository.save(payment);
+        paymentLedgerService.recordEvent(
+                payment,
+                "RAZORPAY_WEBHOOK",
+                "PAYMENT_AUTHORIZED",
+                prev,
+                PaymentStatus.AUTHORIZED,
+                eventId,
+                "Payment authorized via Razorpay webhook"
+        );
+        return "PROCESSED";
+    }
+
+    @Transactional
+    public String failPaymentFromWebhook(
+            String gatewayOrderId,
+            String gatewayPaymentId,
+            String errorCode,
+            String errorDescription,
+            String eventId) {
+        Optional<Payment> payOpt = paymentRepository.findByGatewayOrderIdForUpdate(gatewayOrderId);
+        if (payOpt.isEmpty()) {
+            return "No internal payment found for gateway order " + gatewayOrderId;
+        }
+        Payment payment = payOpt.get();
+        if (payment.getStatus() == PaymentStatus.CAPTURED
+                || payment.getStatus() == PaymentStatus.REFUNDED
+                || payment.getStatus() == PaymentStatus.PARTIALLY_REFUNDED) {
+            paymentLedgerService.recordEvent(
+                    payment,
+                    "RAZORPAY_WEBHOOK",
+                    "IGNORED_OUT_OF_ORDER",
+                    payment.getStatus(),
+                    payment.getStatus(),
+                    eventId,
+                    "Out-of-order payment.failed ignored because payment is already " + payment.getStatus()
+            );
+            return "IGNORED_OUT_OF_ORDER";
+        }
+        CheckoutSession session = checkoutRepository
+                .findByCheckoutReferenceForUpdate(payment.getCheckoutSession().getCheckoutReference())
+                .orElseThrow();
+        payment.setGatewayPaymentId(gatewayPaymentId);
+        markPaymentFailedInternal(
+                session,
+                payment,
+                errorCode,
+                errorDescription != null ? errorDescription : "Payment failed (webhook)",
+                "RAZORPAY_WEBHOOK",
+                session.getStatus() == CheckoutStatus.AWAITING_PAYMENT
+        );
+        return "PROCESSED";
+    }
+
+    private void finalizeCapturedPayment(
+            CheckoutSession session,
+            Payment payment,
+            String gatewayPaymentId,
+            String signature,
+            String method) {
+        Instant now = Instant.now();
+        Long customerId = session.getCustomer().getId();
+
+        inventoryService.commitReservations(session.getCheckoutReference(), customerId);
+
+        PaymentStatus prevPayStatus = payment.getStatus();
+        payment.setGatewayPaymentId(gatewayPaymentId);
+        if (signature != null) {
+            payment.setGatewaySignature(signature);
+        }
+        payment.setVerificationMethod(method);
+        payment.setLastGatewayStatus("captured");
+        payment.setStatus(PaymentStatus.CAPTURED);
+        if (payment.getAuthorizedAt() == null) {
+            payment.setAuthorizedAt(now);
+        }
+        payment.setCapturedAt(now);
+        payment.setFailureCode(null);
+        payment.setFailureReason(null);
+        paymentRepository.save(payment);
+
+        if (prevPayStatus != PaymentStatus.CAPTURED) {
+            paymentLedgerService.recordEvent(
+                    payment,
+                    "WEBHOOK".equals(method) ? "RAZORPAY_WEBHOOK" : "CLIENT_CALLBACK",
+                    "PAYMENT_CAPTURED",
+                    prevPayStatus,
+                    PaymentStatus.CAPTURED,
+                    gatewayPaymentId,
+                    "Payment captured and verified via " + method
+            );
+        }
+
+        if (session.getStatus() != CheckoutStatus.PAID) {
+            session.setStatus(CheckoutStatus.PAID);
+            session.setPaymentReference(gatewayPaymentId);
+            session.setPaidAt(now);
+            checkoutRepository.save(session);
+
+            couponService.incrementUsage(session.getCouponCode());
+
+            List<Order> childOrders = orderRepository.findByCheckoutSessionIdOrderByIdAsc(session.getId());
+            for (Order child : childOrders) {
+                OrderStatus prev = child.getStatus();
+                child.setStatus(OrderStatus.PLACED);
+                child.setPaymentStatus(OrderPaymentStatus.PAID);
+                child.setPlacedAt(now);
+                orderRepository.save(child);
+
+                orderService.recordStatusChange(
+                        child,
+                        prev,
+                        OrderStatus.PLACED,
+                        customerId,
+                        "WEBHOOK".equals(method) ? "SYSTEM" : "CUSTOMER",
+                        session.getCustomer().getFullName(),
+                        "Verified payment " + gatewayPaymentId + " confirmed via " + method
+                );
+
+                List<OrderItem> orderItems = orderItemRepository.findByOrderIdWithRefs(child.getId());
+                for (OrderItem oi : orderItems) {
+                    if (oi.isPrescriptionRequired() && oi.getPrescription() != null) {
+                        prescriptionService.linkPrescriptionToOrder(
+                                customerId,
+                                oi.getMedicine().getId(),
+                                oi.getPrescription().getId(),
+                                child.getId(),
+                                child.getOrderNumber()
+                        );
+                    }
+                }
+
+                invoiceService.ensureInvoiceIssued(child);
+            }
+
+            cartItemRepository.deleteByCustomerId(customerId);
+        }
+    }
+
+    private void markPaymentFailedInternal(
+            CheckoutSession session,
+            Payment payment,
+            String errorCode,
+            String errorDescription,
+            String source,
+            boolean releaseStockAndFailSession) {
+        Instant now = Instant.now();
+        PaymentStatus prev = payment.getStatus();
+        payment.setStatus(PaymentStatus.FAILED);
+        payment.setLastGatewayStatus("failed");
+        payment.setFailureCode(errorCode);
+        payment.setFailureReason(errorDescription);
+        payment.setFailedAt(now);
+        paymentRepository.save(payment);
+
+        paymentLedgerService.recordEvent(
+                payment,
+                source,
+                "PAYMENT_FAILED",
+                prev,
+                PaymentStatus.FAILED,
+                payment.getGatewayPaymentId(),
+                (errorCode != null ? errorCode + ": " : "") + errorDescription
+        );
+
+        if (releaseStockAndFailSession && session.getStatus() == CheckoutStatus.AWAITING_PAYMENT) {
+            inventoryService.releaseReservations(
+                    session.getCheckoutReference(),
+                    session.getCustomer().getId(),
+                    "Payment failed: " + errorDescription
+            );
+            session.setStatus(CheckoutStatus.FAILED);
+            session.setFailureReason(errorDescription);
+            checkoutRepository.save(session);
+
+            List<Order> childOrders = orderRepository.findByCheckoutSessionIdOrderByIdAsc(session.getId());
+            for (Order child : childOrders) {
+                OrderStatus prevOrder = child.getStatus();
+                child.setStatus(OrderStatus.FAILED);
+                child.setPaymentStatus(OrderPaymentStatus.FAILED);
+                child.setDeliveryAssignmentStatus(DeliveryAssignmentStatus.CANCELLED);
+                child.setCancellationReason("Payment failed: " + errorDescription);
+                child.setCancelledByRole("SYSTEM");
+                child.setCancelledAt(now);
+                orderRepository.save(child);
+
+                orderService.recordStatusChange(
+                        child, prevOrder, OrderStatus.FAILED, null, "SYSTEM", "Payment Failure", errorDescription
+                );
+            }
+        }
     }
 
     @Transactional
@@ -742,55 +1184,6 @@ public class CheckoutService {
             sb.append(" (").append(addr.getLandmark()).append(")");
         }
         return sb.toString();
-    }
-
-    private String createGatewayOrderIdIfConfigured(String checkoutRef, BigDecimal grandTotal) {
-        String keyId = razorpayProperties.getKeyId();
-        String keySecret = razorpayProperties.getKeySecret();
-        String fallbackId = "rzp_ord_" + checkoutRef.toLowerCase();
-
-        if (keyId == null || keyId.isBlank() || keySecret == null || keySecret.isBlank()
-                || "rzp_test_medexa_local".equals(keyId)
-                || "your_razorpay_key_id".equals(keyId)) {
-            return fallbackId;
-        }
-
-        try {
-            long amountPaise = grandTotal.multiply(ONE_HUNDRED).longValue();
-            String auth = Base64.getEncoder().encodeToString((keyId + ":" + keySecret).getBytes(StandardCharsets.UTF_8));
-            String payload = """
-                    {"amount":%d,"currency":"INR","receipt":"%s","payment_capture":1}
-                    """.formatted(amountPaise, checkoutRef);
-
-            HttpClient client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(4))
-                    .build();
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create("https://api.razorpay.com/v1/orders"))
-                    .timeout(Duration.ofSeconds(5))
-                    .header("Authorization", "Basic " + auth)
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(payload))
-                    .build();
-
-            HttpResponse<String> response = client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                String body = response.body();
-                int idx = body.indexOf("\"id\":\"");
-                if (idx >= 0) {
-                    int start = idx + 6;
-                    int end = body.indexOf("\"", start);
-                    if (end > start) {
-                        return body.substring(start, end);
-                    }
-                }
-            } else {
-                log.warn("Razorpay order creation returned HTTP {}; using local prepared order reference.", response.statusCode());
-            }
-        } catch (Exception ex) {
-            log.warn("Unable to reach Razorpay Orders API ({}); falling back to prepared local reference.", ex.getMessage());
-        }
-        return fallbackId;
     }
 
     private CheckoutSessionResponse buildCheckoutResponse(CheckoutSession session) {

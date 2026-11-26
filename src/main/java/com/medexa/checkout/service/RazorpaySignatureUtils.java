@@ -46,4 +46,33 @@ public final class RazorpaySignatureUtils {
                 providedSignature.trim().getBytes(StandardCharsets.UTF_8)
         );
     }
+
+    public static boolean verifyWebhookSignature(
+            String rawPayload,
+            String providedSignature,
+            String webhookSecret) {
+        if (rawPayload == null || providedSignature == null || webhookSecret == null || webhookSecret.isBlank()) {
+            return false;
+        }
+        String expected = signPayload(rawPayload, webhookSecret);
+        return MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                providedSignature.trim().getBytes(StandardCharsets.UTF_8)
+        );
+    }
+
+    public static String sha256Hex(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] raw = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(raw.length * 2);
+            for (byte b : raw) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to compute SHA-256 hash.", ex);
+        }
+    }
 }
