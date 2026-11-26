@@ -9,6 +9,7 @@ import com.medexa.common.storage.FileStorageService;
 import com.medexa.common.util.SlugUtils;
 import com.medexa.medicine.Medicine;
 import com.medexa.medicine.MedicineApprovalStatus;
+import com.medexa.medicine.MedicineClassificationRule;
 import com.medexa.medicine.MedicineImage;
 import com.medexa.medicine.MedicineImageRepository;
 import com.medexa.medicine.MedicineRepository;
@@ -40,6 +41,7 @@ public class MedicineService {
     private final CategoryRepository categoryRepository;
     private final PharmacyService pharmacyService;
     private final FileStorageService fileStorageService;
+    private final MedicineClassificationService classificationService;
 
     @Transactional(readOnly = true)
     public Page<PharmacyMedicineResponse> listOwnMedicines(
@@ -69,6 +71,12 @@ public class MedicineService {
         Category category = requireActiveCategory(request.categoryId());
         validatePricing(request.mrpPrice(), request.sellingPrice());
 
+        MedicineClassificationRule rule = classificationService.resolveRule(
+                request.classificationCode(),
+                Boolean.TRUE.equals(request.prescriptionRequired())
+        );
+        boolean rxRequired = rule.isPrescriptionRequired() || Boolean.TRUE.equals(request.prescriptionRequired());
+
         String slug = SlugUtils.toUniqueSlug(
                 request.name() + "-" + pharmacy.getId(),
                 "medicine",
@@ -88,7 +96,8 @@ public class MedicineService {
                 .description(request.description() != null ? request.description().trim() : null)
                 .mrpPrice(request.mrpPrice())
                 .sellingPrice(request.sellingPrice())
-                .prescriptionRequired(Boolean.TRUE.equals(request.prescriptionRequired()))
+                .prescriptionRequired(rxRequired)
+                .classificationCode(rule.getClassificationCode())
                 .approvalStatus(MedicineApprovalStatus.PENDING_APPROVAL)
                 .active(request.active() == null || request.active())
                 .totalAvailableQuantity(0)
@@ -116,7 +125,12 @@ public class MedicineService {
         medicine.setDescription(request.description() != null ? request.description().trim() : null);
         medicine.setMrpPrice(request.mrpPrice());
         medicine.setSellingPrice(request.sellingPrice());
-        medicine.setPrescriptionRequired(Boolean.TRUE.equals(request.prescriptionRequired()));
+        MedicineClassificationRule rule = classificationService.resolveRule(
+                request.classificationCode(),
+                Boolean.TRUE.equals(request.prescriptionRequired())
+        );
+        medicine.setPrescriptionRequired(rule.isPrescriptionRequired() || Boolean.TRUE.equals(request.prescriptionRequired()));
+        medicine.setClassificationCode(rule.getClassificationCode());
         if (request.active() != null) {
             medicine.setActive(request.active());
         }
@@ -205,7 +219,12 @@ public class MedicineService {
                 query, categoryId, pharmacyId, minPrice, maxPrice, inStockOnly, prescriptionRequired, pageable
         );
         Map<Long, List<MedicineImage>> imagesByMedicine = loadImagesMap(page.getContent());
-        return page.map(m -> PublicMedicineResponse.from(m, imagesByMedicine.getOrDefault(m.getId(), List.of())));
+        Map<String, MedicineClassificationRule> ruleMap = classificationService.loadRuleMap();
+        return page.map(m -> PublicMedicineResponse.from(
+                m,
+                imagesByMedicine.getOrDefault(m.getId(), List.of()),
+                ruleMap.get(m.getClassificationCode() != null ? m.getClassificationCode().toUpperCase() : "OTC")
+        ));
     }
 
     @Transactional(readOnly = true)
@@ -214,7 +233,25 @@ public class MedicineService {
                 .orElseThrow(() -> new ResourceNotFoundException("Medicine not found in catalog."));
         List<MedicineImage> images = medicineImageRepository
                 .findByMedicineIdOrderByPrimaryImageDescDisplayOrderAscIdAsc(medicine.getId());
-        return PublicMedicineResponse.from(medicine, images);
+        Map<String, MedicineClassificationRule> ruleMap = classificationService.loadRuleMap();
+        return PublicMedicineResponse.from(
+                medicine,
+                images,
+                ruleMap.get(medicine.getClassificationCode() != null ? medicine.getClassificationCode().toUpperCase() : "OTC")
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public List<MedicineImageResponse> getPublicMedicineImages(Long medicineId) {
+        Medicine medicine = medicineRepository.findById(medicineId)
+                .orElseThrow(() -> new ResourceNotFoundException("Medicine not found."));
+        if (medicine.getApprovalStatus() != MedicineApprovalStatus.APPROVED || !medicine.isActive()) {
+            throw new ResourceNotFoundException("Medicine images not available.");
+        }
+        return medicineImageRepository.findByMedicineIdOrderByPrimaryImageDescDisplayOrderAscIdAsc(medicineId)
+                .stream()
+                .map(MedicineImageResponse::from)
+                .toList();
     }
 
     @Transactional(readOnly = true)

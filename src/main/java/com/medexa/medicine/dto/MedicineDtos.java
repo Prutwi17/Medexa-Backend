@@ -2,8 +2,11 @@ package com.medexa.medicine.dto;
 
 import com.medexa.medicine.Medicine;
 import com.medexa.medicine.MedicineApprovalStatus;
+import com.medexa.medicine.MedicineClassificationRule;
 import com.medexa.medicine.MedicineImage;
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -58,6 +61,47 @@ public final class MedicineDtos {
             @NotNull(message = "Prescription requirement flag is required.")
             Boolean prescriptionRequired,
 
+            @Size(max = 40)
+            String classificationCode,
+
+            Boolean active
+    ) {
+    }
+
+    public record ClassificationRuleResponse(
+            String classificationCode,
+            String displayName,
+            boolean prescriptionRequired,
+            Integer defaultRxValidityDays,
+            Integer maxUnitsPerOrder,
+            boolean autoSubstitutionAllowed,
+            boolean requiresPharmacistLicenseCheck,
+            String warningText,
+            boolean active
+    ) {
+        public static ClassificationRuleResponse from(MedicineClassificationRule rule) {
+            return new ClassificationRuleResponse(
+                    rule.getClassificationCode(),
+                    rule.getDisplayName(),
+                    rule.isPrescriptionRequired(),
+                    rule.getDefaultRxValidityDays(),
+                    rule.getMaxUnitsPerOrder(),
+                    rule.isAutoSubstitutionAllowed(),
+                    rule.isRequiresPharmacistLicenseCheck(),
+                    rule.getWarningText(),
+                    rule.isActive()
+            );
+        }
+    }
+
+    public record ClassificationRuleUpdateRequest(
+            @NotBlank @Size(max = 120) String displayName,
+            @NotNull Boolean prescriptionRequired,
+            @NotNull @Min(1) @Max(730) Integer defaultRxValidityDays,
+            @NotNull @Min(1) @Max(500) Integer maxUnitsPerOrder,
+            Boolean autoSubstitutionAllowed,
+            @NotNull Boolean requiresPharmacistLicenseCheck,
+            @Size(max = 500) String warningText,
             Boolean active
     ) {
     }
@@ -106,6 +150,7 @@ public final class MedicineDtos {
             BigDecimal mrpPrice,
             BigDecimal sellingPrice,
             boolean prescriptionRequired,
+            String classificationCode,
             MedicineApprovalStatus approvalStatus,
             String rejectionReason,
             Instant reviewedAt,
@@ -133,6 +178,7 @@ public final class MedicineDtos {
                     m.getMrpPrice(),
                     m.getSellingPrice(),
                     m.isPrescriptionRequired(),
+                    m.getClassificationCode(),
                     m.getApprovalStatus(),
                     m.getRejectionReason(),
                     m.getReviewedAt(),
@@ -158,6 +204,11 @@ public final class MedicineDtos {
             BigDecimal mrpPrice,
             BigDecimal sellingPrice,
             boolean prescriptionRequired,
+            String classificationCode,
+            String classificationDisplayName,
+            boolean autoSubstitutionAllowed,
+            Integer maxUnitsPerOrder,
+            String classificationWarning,
             boolean inStock,
             Integer availableQuantity,
             Long categoryId,
@@ -171,6 +222,13 @@ public final class MedicineDtos {
             List<MedicineImageResponse> images
     ) {
         public static PublicMedicineResponse from(Medicine m, List<MedicineImage> images) {
+            return from(m, images, null);
+        }
+
+        public static PublicMedicineResponse from(
+                Medicine m,
+                List<MedicineImage> images,
+                MedicineClassificationRule rule) {
             List<MedicineImageResponse> imageDtos = images.stream().map(MedicineImageResponse::from).toList();
             String primaryUrl = imageDtos.stream()
                     .filter(MedicineImageResponse::primaryImage)
@@ -179,6 +237,11 @@ public final class MedicineDtos {
                     .orElse(imageDtos.isEmpty() ? null : imageDtos.get(0).imageUrl());
 
             int available = m.getTotalAvailableQuantity() != null ? m.getTotalAvailableQuantity() : 0;
+            String classCode = m.getClassificationCode() != null ? m.getClassificationCode() : (m.isPrescriptionRequired() ? "SCHEDULE_H" : "OTC");
+            String className = rule != null ? rule.getDisplayName() : (m.isPrescriptionRequired() ? "Prescription Medicine" : "Over-the-Counter (OTC)");
+            boolean autoSub = rule != null && !m.isPrescriptionRequired() && rule.isAutoSubstitutionAllowed();
+            Integer maxUnits = rule != null ? rule.getMaxUnitsPerOrder() : (m.isPrescriptionRequired() ? 30 : 50);
+            String warning = rule != null ? rule.getWarningText() : null;
 
             return new PublicMedicineResponse(
                     m.getId(),
@@ -192,7 +255,12 @@ public final class MedicineDtos {
                     m.getDescription(),
                     m.getMrpPrice(),
                     m.getSellingPrice(),
-                    m.isPrescriptionRequired(),
+                    m.isPrescriptionRequired() || (rule != null && rule.isPrescriptionRequired()),
+                    classCode,
+                    className,
+                    autoSub,
+                    maxUnits,
+                    warning,
                     available > 0,
                     available,
                     m.getCategory().getId(),
