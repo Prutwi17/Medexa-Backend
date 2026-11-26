@@ -3,11 +3,17 @@ package com.medexa.common.web;
 import com.medexa.common.exception.GlobalExceptionHandler;
 import com.medexa.config.CorsConfig;
 import com.medexa.config.CorsProperties;
+import com.medexa.security.JwtAuthenticationFilter;
+import com.medexa.security.JwtTokenService;
+import com.medexa.security.RestAccessDeniedHandler;
+import com.medexa.security.RestAuthenticationEntryPoint;
 import com.medexa.security.SecurityConfig;
+import com.medexa.user.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -21,12 +27,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         CorsConfig.class,
         CorsProperties.class,
         CorrelationIdFilter.class,
-        GlobalExceptionHandler.class
+        GlobalExceptionHandler.class,
+        JwtAuthenticationFilter.class,
+        RestAuthenticationEntryPoint.class,
+        RestAccessDeniedHandler.class
 })
 class HealthControllerTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @MockitoBean
+    private JwtTokenService jwtTokenService;
+
+    @MockitoBean
+    private UserRepository userRepository;
 
     @Test
     void checkHealthReturnsStandardEnvelopeAndCorrelationId() throws Exception {

@@ -1,0 +1,34 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:medexa_test;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+app:
+  jwt:
+    secret: test-only-medexa-signing-key-at-least-sixty-four-characters-long-123456
+    access-expiration-ms: 900000
+    refresh-expiration-ms: 604800000
+  auth:
+    google-client-id: test-google-client-id.apps.googleusercontent.com
+    require-email-verification-for-login: true
+    rate-limit:
+      max-attempts: 5
+      window-minutes: 15
+  admin:
+    seed:
+      enabled: true
+      full-name: Om Prasad
+      email: omp27614@gmail.com
+      password: TestAdminPassword#2026
+  mail:
+    enabled: false
