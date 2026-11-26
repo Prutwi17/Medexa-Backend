@@ -7,6 +7,8 @@ import com.medexa.order.dto.OrderDtos.CancelOrderRequest;
 import com.medexa.order.dto.OrderDtos.OrderResponse;
 import com.medexa.order.dto.OrderDtos.RefundRequestPayload;
 import com.medexa.order.service.OrderService;
+import com.medexa.refund.dto.RefundDtos.CreateRefundRequest;
+import com.medexa.refund.service.RefundService;
 import com.medexa.security.MedexaUserPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -35,6 +37,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class CustomerOrderController {
 
     private final OrderService orderService;
+    private final RefundService refundService;
 
     @GetMapping
     @Operation(summary = "List authenticated customer's pharmacy orders")
@@ -73,9 +76,14 @@ public class CustomerOrderController {
             @AuthenticationPrincipal MedexaUserPrincipal principal,
             @PathVariable Long orderId,
             @Valid @RequestBody RefundRequestPayload request) {
+        refundService.createRefundRequest(
+                principal.getUserId(),
+                orderId,
+                new CreateRefundRequest(request.reason(), null)
+        );
         return ApiResponse.ok(
                 "Refund request submitted.",
-                orderService.requestRefund(principal.getUserId(), orderId, request)
+                orderService.getCustomerOrder(principal.getUserId(), orderId)
         );
     }
 }

@@ -42,6 +42,7 @@ public class SecurityConfig {
             "/api/v1/auth/reset-password",
             "/api/v1/auth/csrf",
             "/api/v1/public/**",
+            "/api/v1/webhooks/**",
             "/api/v1/files/categories/**",
             "/api/v1/files/medicines/**"
     };
