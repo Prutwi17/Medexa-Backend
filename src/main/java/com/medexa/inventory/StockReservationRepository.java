@@ -10,6 +10,8 @@ import org.springframework.data.repository.query.Param;
 
 public interface StockReservationRepository extends JpaRepository<StockReservation, Long> {
 
+    boolean existsByReservationKeyAndStatus(String reservationKey, ReservationStatus status);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
             SELECT r FROM StockReservation r
@@ -20,6 +22,20 @@ public interface StockReservationRepository extends JpaRepository<StockReservati
             ORDER BY r.id ASC
             """)
     List<StockReservation> findActiveByReservationKeyForUpdate(@Param("reservationKey") String reservationKey);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            SELECT r FROM StockReservation r
+            JOIN FETCH r.batch b
+            JOIN FETCH r.medicine m
+            WHERE r.reservationKey = :reservationKey
+              AND r.medicine.id = :medicineId
+              AND r.status = 'COMMITTED'
+            ORDER BY r.id ASC
+            """)
+    List<StockReservation> findCommittedByKeyAndMedicineForUpdate(
+            @Param("reservationKey") String reservationKey,
+            @Param("medicineId") Long medicineId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""

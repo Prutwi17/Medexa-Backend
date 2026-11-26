@@ -151,3 +151,11 @@ app:
       full-name: ${ADMIN_SEED_NAME:Om Prasad}
       email: ${ADMIN_SEED_EMAIL:omp27614@gmail.com}
       password: ${ADMIN_SEED_PASSWORD:}
+  checkout:
+    reservation-ttl-minutes: ${CHECKOUT_RESERVATION_TTL_MINUTES:15}
+    tax-rate-percent: ${CHECKOUT_TAX_RATE_PERCENT:5.00}
+    platform-commission-percent: ${CHECKOUT_COMMISSION_PERCENT:10.00}
+  razorpay:
+    key-id: ${RAZORPAY_KEY_ID:}
+    key-secret: ${RAZORPAY_KEY_SECRET:}
+    webhook-secret: ${RAZORPAY_WEBHOOK_SECRET:}
