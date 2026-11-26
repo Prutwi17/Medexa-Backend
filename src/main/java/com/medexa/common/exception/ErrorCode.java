@@ -1,0 +1,15 @@
+package com.medexa.common.exception;
+
+public enum ErrorCode {
+    VALIDATION_ERROR,
+    RESOURCE_NOT_FOUND,
+    BAD_REQUEST,
+    BUSINESS_RULE_VIOLATION,
+    UNAUTHORIZED,
+    FORBIDDEN,
+    CONFLICT,
+    MALFORMED_REQUEST,
+    METHOD_NOT_ALLOWED,
+    ENDPOINT_NOT_FOUND,
+    INTERNAL_ERROR
+}
