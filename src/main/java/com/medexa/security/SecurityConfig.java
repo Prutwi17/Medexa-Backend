@@ -84,6 +84,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
                         .requestMatchers("/api/v1/files/prescriptions/**").denyAll()
+                        .requestMatchers("/api/v1/files/rider-docs/**").denyAll()
+                        .requestMatchers("/api/v1/files/delivery-proofs/**").denyAll()
                         .requestMatchers("/api/v1/files/licenses/**").hasAnyRole("ADMIN", "PHARMACY")
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/v1/pharmacy/**").hasRole("PHARMACY")

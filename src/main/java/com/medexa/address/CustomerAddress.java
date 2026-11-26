@@ -61,4 +61,10 @@ public class CustomerAddress extends BaseEntity {
     @Column(name = "is_default", nullable = false)
     @Builder.Default
     private boolean defaultAddress = false;
+
+    @Column(name = "latitude", precision = 9, scale = 6)
+    private java.math.BigDecimal latitude;
+
+    @Column(name = "longitude", precision = 9, scale = 6)
+    private java.math.BigDecimal longitude;
 }

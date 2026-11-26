@@ -25,9 +25,16 @@ public class FileStorageService {
     public static final String BUCKET_MEDICINES = "medicines";
     public static final String BUCKET_LICENSES = "licenses";
     public static final String BUCKET_PRESCRIPTIONS = "prescriptions";
+    public static final String BUCKET_RIDER_DOCS = "rider-docs";
+    public static final String BUCKET_DELIVERY_PROOFS = "delivery-proofs";
 
     private static final Set<String> ALLOWED_BUCKETS = Set.of(
-            BUCKET_CATEGORIES, BUCKET_MEDICINES, BUCKET_LICENSES, BUCKET_PRESCRIPTIONS
+            BUCKET_CATEGORIES,
+            BUCKET_MEDICINES,
+            BUCKET_LICENSES,
+            BUCKET_PRESCRIPTIONS,
+            BUCKET_RIDER_DOCS,
+            BUCKET_DELIVERY_PROOFS
     );
 
     private static final Map<String, String> IMAGE_CONTENT_TYPES = Map.of(
