@@ -32,3 +32,6 @@ app:
       password: TestAdminPassword#2026
   mail:
     enabled: false
+
+  storage:
+    upload-dir: ./target/test-uploads

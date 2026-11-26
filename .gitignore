@@ -6,6 +6,9 @@ target/
 logs/
 *.log
 
+# Local file uploads
+uploads/
+
 # Package files
 *.jar
 *.war

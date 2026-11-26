@@ -40,7 +40,10 @@ public class SecurityConfig {
             "/api/v1/auth/resend-verification",
             "/api/v1/auth/forgot-password",
             "/api/v1/auth/reset-password",
-            "/api/v1/auth/csrf"
+            "/api/v1/auth/csrf",
+            "/api/v1/public/**",
+            "/api/v1/files/categories/**",
+            "/api/v1/files/medicines/**"
     };
 
     private final CorsConfigurationSource corsConfigurationSource;
@@ -79,6 +82,7 @@ public class SecurityConfig {
                         .accessDeniedHandler(accessDeniedHandler))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
+                        .requestMatchers("/api/v1/files/licenses/**").hasAnyRole("ADMIN", "PHARMACY")
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/v1/pharmacy/**").hasRole("PHARMACY")
                         .requestMatchers("/api/v1/rider/**").hasRole("RIDER")

@@ -1,0 +1,153 @@
+-- Phase 3: Pharmacy delivery zones, categories, medicine catalog, and FEFO batch inventory
+
+CREATE TABLE IF NOT EXISTS pharmacy_delivery_zones (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    pharmacy_id BIGINT NOT NULL,
+    zone_name VARCHAR(120) NOT NULL,
+    postal_code VARCHAR(20) NOT NULL,
+    city VARCHAR(100) NOT NULL,
+    delivery_fee DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+    min_order_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+    estimated_delivery_minutes INT NOT NULL DEFAULT 45,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    version BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT pk_pharmacy_delivery_zones PRIMARY KEY (id),
+    CONSTRAINT uk_pharmacy_zone_postal UNIQUE (pharmacy_id, postal_code),
+    CONSTRAINT fk_zone_pharmacy FOREIGN KEY (pharmacy_id) REFERENCES pharmacies (id) ON DELETE CASCADE,
+    INDEX idx_zone_postal_active (postal_code, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS categories (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    name VARCHAR(120) NOT NULL,
+    slug VARCHAR(140) NOT NULL,
+    description VARCHAR(500) NULL,
+    image_url VARCHAR(500) NULL,
+    display_order INT NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    version BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT pk_categories PRIMARY KEY (id),
+    CONSTRAINT uk_categories_name UNIQUE (name),
+    CONSTRAINT uk_categories_slug UNIQUE (slug),
+    INDEX idx_categories_active_order (is_active, display_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS medicines (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    pharmacy_id BIGINT NOT NULL,
+    category_id BIGINT NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    slug VARCHAR(230) NOT NULL,
+    brand VARCHAR(150) NOT NULL,
+    manufacturer VARCHAR(180) NOT NULL,
+    composition VARCHAR(500) NOT NULL,
+    dosage_form VARCHAR(80) NOT NULL,
+    pack_size VARCHAR(80) NOT NULL,
+    description TEXT NULL,
+    mrp_price DECIMAL(10, 2) NOT NULL,
+    selling_price DECIMAL(10, 2) NOT NULL,
+    prescription_required BOOLEAN NOT NULL DEFAULT FALSE,
+    approval_status VARCHAR(30) NOT NULL DEFAULT 'PENDING_APPROVAL',
+    rejection_reason VARCHAR(500) NULL,
+    reviewed_by BIGINT NULL,
+    reviewed_at TIMESTAMP(6) NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    total_available_quantity INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    version BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT pk_medicines PRIMARY KEY (id),
+    CONSTRAINT uk_medicines_slug UNIQUE (slug),
+    CONSTRAINT fk_medicines_pharmacy FOREIGN KEY (pharmacy_id) REFERENCES pharmacies (id) ON DELETE CASCADE,
+    CONSTRAINT fk_medicines_category FOREIGN KEY (category_id) REFERENCES categories (id),
+    INDEX idx_medicines_catalog (approval_status, is_active, selling_price),
+    INDEX idx_medicines_pharmacy (pharmacy_id, approval_status),
+    INDEX idx_medicines_category (category_id),
+    INDEX idx_medicines_name (name),
+    INDEX idx_medicines_brand (brand)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS medicine_images (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    medicine_id BIGINT NOT NULL,
+    image_url VARCHAR(500) NOT NULL,
+    alt_text VARCHAR(200) NULL,
+    is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+    display_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    version BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT pk_medicine_images PRIMARY KEY (id),
+    CONSTRAINT fk_medicine_images_medicine FOREIGN KEY (medicine_id) REFERENCES medicines (id) ON DELETE CASCADE,
+    INDEX idx_medicine_images_order (medicine_id, is_primary, display_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS medicine_batches (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    medicine_id BIGINT NOT NULL,
+    pharmacy_id BIGINT NOT NULL,
+    batch_number VARCHAR(100) NOT NULL,
+    manufacturing_date DATE NOT NULL,
+    expiry_date DATE NOT NULL,
+    initial_quantity INT NOT NULL,
+    available_quantity INT NOT NULL,
+    reserved_quantity INT NOT NULL DEFAULT 0,
+    purchase_price DECIMAL(10, 2) NOT NULL,
+    selling_price DECIMAL(10, 2) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    version BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT pk_medicine_batches PRIMARY KEY (id),
+    CONSTRAINT uk_medicine_batch_number UNIQUE (medicine_id, batch_number),
+    CONSTRAINT fk_batch_medicine FOREIGN KEY (medicine_id) REFERENCES medicines (id) ON DELETE CASCADE,
+    CONSTRAINT fk_batch_pharmacy FOREIGN KEY (pharmacy_id) REFERENCES pharmacies (id) ON DELETE CASCADE,
+    INDEX idx_batch_fefo (medicine_id, is_active, expiry_date, available_quantity),
+    INDEX idx_batch_pharmacy_expiry (pharmacy_id, expiry_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_movements (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    medicine_id BIGINT NOT NULL,
+    batch_id BIGINT NOT NULL,
+    pharmacy_id BIGINT NOT NULL,
+    movement_type VARCHAR(40) NOT NULL,
+    quantity_delta INT NOT NULL,
+    balance_after INT NOT NULL,
+    reference_type VARCHAR(60) NULL,
+    reference_id VARCHAR(100) NULL,
+    reason VARCHAR(300) NULL,
+    actor_user_id BIGINT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    CONSTRAINT pk_stock_movements PRIMARY KEY (id),
+    CONSTRAINT fk_movement_medicine FOREIGN KEY (medicine_id) REFERENCES medicines (id) ON DELETE CASCADE,
+    CONSTRAINT fk_movement_batch FOREIGN KEY (batch_id) REFERENCES medicine_batches (id) ON DELETE CASCADE,
+    CONSTRAINT fk_movement_pharmacy FOREIGN KEY (pharmacy_id) REFERENCES pharmacies (id) ON DELETE CASCADE,
+    INDEX idx_movement_medicine_time (medicine_id, created_at),
+    INDEX idx_movement_pharmacy_time (pharmacy_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS stock_reservations (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    reservation_key VARCHAR(100) NOT NULL,
+    medicine_id BIGINT NOT NULL,
+    batch_id BIGINT NOT NULL,
+    pharmacy_id BIGINT NOT NULL,
+    quantity INT NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+    expires_at TIMESTAMP(6) NOT NULL,
+    released_at TIMESTAMP(6) NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    version BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT pk_stock_reservations PRIMARY KEY (id),
+    CONSTRAINT fk_reservation_medicine FOREIGN KEY (medicine_id) REFERENCES medicines (id) ON DELETE CASCADE,
+    CONSTRAINT fk_reservation_batch FOREIGN KEY (batch_id) REFERENCES medicine_batches (id) ON DELETE CASCADE,
+    CONSTRAINT fk_reservation_pharmacy FOREIGN KEY (pharmacy_id) REFERENCES pharmacies (id) ON DELETE CASCADE,
+    INDEX idx_reservation_key_status (reservation_key, status),
+    INDEX idx_reservation_expiry (status, expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
