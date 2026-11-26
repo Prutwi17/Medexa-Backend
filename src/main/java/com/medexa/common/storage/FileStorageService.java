@@ -24,9 +24,10 @@ public class FileStorageService {
     public static final String BUCKET_CATEGORIES = "categories";
     public static final String BUCKET_MEDICINES = "medicines";
     public static final String BUCKET_LICENSES = "licenses";
+    public static final String BUCKET_PRESCRIPTIONS = "prescriptions";
 
     private static final Set<String> ALLOWED_BUCKETS = Set.of(
-            BUCKET_CATEGORIES, BUCKET_MEDICINES, BUCKET_LICENSES
+            BUCKET_CATEGORIES, BUCKET_MEDICINES, BUCKET_LICENSES, BUCKET_PRESCRIPTIONS
     );
 
     private static final Map<String, String> IMAGE_CONTENT_TYPES = Map.of(
@@ -44,12 +45,26 @@ public class FileStorageService {
 
     private final StorageProperties storageProperties;
 
+    public record StoredFileInfo(
+            String urlPath,
+            String storedFilename,
+            String originalFilename,
+            String contentType,
+            long sizeBytes
+    ) {
+    }
+
     public String storeImage(String bucket, MultipartFile file) {
-        return store(bucket, file, IMAGE_CONTENT_TYPES, "Only JPEG, PNG, and WEBP images are permitted.");
+        return store(bucket, file, IMAGE_CONTENT_TYPES, "Only JPEG, PNG, and WEBP images are permitted.").urlPath();
     }
 
     public String storeDocument(String bucket, MultipartFile file) {
-        return store(bucket, file, DOCUMENT_CONTENT_TYPES, "Only JPEG, PNG, WEBP, or PDF files are permitted.");
+        return store(bucket, file, DOCUMENT_CONTENT_TYPES, "Only JPEG, PNG, WEBP, or PDF files are permitted.").urlPath();
+    }
+
+    public StoredFileInfo storePrescriptionDocument(MultipartFile file) {
+        return store(BUCKET_PRESCRIPTIONS, file, DOCUMENT_CONTENT_TYPES,
+                "Only JPEG, PNG, WEBP, or PDF prescription files are permitted.");
     }
 
     public Resource loadAsResource(String bucket, String filename) {
@@ -71,7 +86,7 @@ public class FileStorageService {
         }
     }
 
-    private String store(
+    private StoredFileInfo store(
             String bucket,
             MultipartFile file,
             Map<String, String> allowedTypes,
@@ -97,10 +112,16 @@ public class FileStorageService {
             throw new BadRequestException("Invalid storage path.");
         }
 
+        String originalName = file.getOriginalFilename();
+        String safeOriginal = (originalName != null && !originalName.isBlank())
+                ? Paths.get(originalName).getFileName().toString()
+                : storedFilename;
+
         try {
             Files.createDirectories(bucketRoot);
             Files.copy(file.getInputStream(), target, StandardCopyOption.REPLACE_EXISTING);
-            return "/api/v1/files/" + bucket + "/" + storedFilename;
+            String urlPath = "/api/v1/files/" + bucket + "/" + storedFilename;
+            return new StoredFileInfo(urlPath, storedFilename, safeOriginal, contentType.toLowerCase(), file.getSize());
         } catch (IOException ex) {
             throw new IllegalStateException("Failed to store uploaded file.", ex);
         }

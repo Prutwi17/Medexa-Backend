@@ -70,6 +70,10 @@ public class Medicine extends BaseEntity {
     @Builder.Default
     private boolean prescriptionRequired = false;
 
+    @Column(name = "classification_code", nullable = false, length = 40)
+    @Builder.Default
+    private String classificationCode = "OTC";
+
     @Enumerated(EnumType.STRING)
     @Column(name = "approval_status", nullable = false, length = 30)
     @Builder.Default

@@ -82,6 +82,7 @@ public class SecurityConfig {
                         .accessDeniedHandler(accessDeniedHandler))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
+                        .requestMatchers("/api/v1/files/prescriptions/**").denyAll()
                         .requestMatchers("/api/v1/files/licenses/**").hasAnyRole("ADMIN", "PHARMACY")
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/v1/pharmacy/**").hasRole("PHARMACY")
