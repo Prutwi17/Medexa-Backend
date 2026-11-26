@@ -35,3 +35,11 @@ app:
 
   storage:
     upload-dir: ./target/test-uploads
+  checkout:
+    reservation-ttl-minutes: 15
+    tax-rate-percent: 5.00
+    platform-commission-percent: 10.00
+  razorpay:
+    key-id: rzp_test_medexa_local
+    key-secret: test_razorpay_secret_key_for_hmac_verification
+    webhook-secret: test_webhook_secret

@@ -1,0 +1,15 @@
+package com.medexa.order;
+
+public enum OrderStatus {
+    PAYMENT_PENDING,
+    PLACED,
+    PHARMACY_ACCEPTED,
+    PHARMACY_REJECTED,
+    PREPARING,
+    READY_FOR_PICKUP,
+    RIDER_ASSIGNED,
+    OUT_FOR_DELIVERY,
+    DELIVERED,
+    CANCELLED,
+    FAILED
+}

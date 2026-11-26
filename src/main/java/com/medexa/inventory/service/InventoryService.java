@@ -293,6 +293,10 @@ public class InventoryService {
     public void commitReservations(String reservationKey, Long actorUserId) {
         List<StockReservation> reservations = reservationRepository.findActiveByReservationKeyForUpdate(reservationKey);
         if (reservations.isEmpty()) {
+            if (reservationRepository.existsByReservationKeyAndStatus(reservationKey, ReservationStatus.COMMITTED)) {
+                // Idempotent retry protection: already committed, never deduct stock twice
+                return;
+            }
             throw new BusinessRuleException("No active stock reservation found for key '" + reservationKey + "'.");
         }
 
@@ -316,10 +320,129 @@ public class InventoryService {
                     batch.getAvailableQuantity(),
                     "RESERVATION",
                     reservationKey,
-                    "Reserved stock committed for dispatch",
+                    "Reserved stock committed for verified order",
                     actorUserId
             );
         }
+    }
+
+    @Transactional
+    public void releaseReservationsForMedicine(
+            String reservationKey,
+            Long medicineId,
+            Long actorUserId,
+            String reason) {
+        List<StockReservation> active = reservationRepository.findActiveByReservationKeyForUpdate(reservationKey)
+                .stream()
+                .filter(r -> r.getMedicine().getId().equals(medicineId))
+                .toList();
+        if (!active.isEmpty()) {
+            Instant now = Instant.now();
+            Set<Medicine> affected = new HashSet<>();
+            for (StockReservation res : active) {
+                MedicineBatch batch = batchRepository.findByIdForUpdate(res.getBatch().getId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Batch not found during release."));
+                int qty = res.getQuantity();
+                batch.setReservedQuantity(Math.max(0, batch.getReservedQuantity() - qty));
+                batch.setAvailableQuantity(batch.getAvailableQuantity() + qty);
+                batchRepository.save(batch);
+
+                res.setStatus(ReservationStatus.RELEASED);
+                res.setReleasedAt(now);
+                reservationRepository.save(res);
+
+                recordMovement(
+                        res.getMedicine(),
+                        batch,
+                        batch.getPharmacy(),
+                        StockMovementType.RELEASED,
+                        qty,
+                        batch.getAvailableQuantity(),
+                        "ORDER_CANCEL",
+                        reservationKey,
+                        reason != null ? reason : "Order cancelled before payment",
+                        actorUserId
+                );
+                affected.add(res.getMedicine());
+            }
+            affected.forEach(this::syncMedicineTotalStock);
+            return;
+        }
+
+        List<StockReservation> committed = reservationRepository
+                .findCommittedByKeyAndMedicineForUpdate(reservationKey, medicineId);
+        if (committed.isEmpty()) {
+            return;
+        }
+        Instant now = Instant.now();
+        Set<Medicine> affected = new HashSet<>();
+        for (StockReservation res : committed) {
+            MedicineBatch batch = batchRepository.findByIdForUpdate(res.getBatch().getId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Batch not found during restock."));
+            int qty = res.getQuantity();
+            batch.setAvailableQuantity(batch.getAvailableQuantity() + qty);
+            batchRepository.save(batch);
+
+            res.setStatus(ReservationStatus.RELEASED);
+            res.setReleasedAt(now);
+            reservationRepository.save(res);
+
+            recordMovement(
+                    res.getMedicine(),
+                    batch,
+                    batch.getPharmacy(),
+                    StockMovementType.ADJUSTMENT_IN,
+                    qty,
+                    batch.getAvailableQuantity(),
+                    "ORDER_CANCEL",
+                    reservationKey,
+                    reason != null ? reason : "Stock restored on order cancellation/rejection",
+                    actorUserId
+            );
+            affected.add(res.getMedicine());
+        }
+        affected.forEach(this::syncMedicineTotalStock);
+    }
+
+    @Transactional
+    public Set<String> releaseExpiredReservations() {
+        List<StockReservation> expired = reservationRepository.findExpiredActiveReservationsForUpdate(Instant.now());
+        if (expired.isEmpty()) {
+            return Set.of();
+        }
+        Instant now = Instant.now();
+        Set<Medicine> affectedMedicines = new HashSet<>();
+        Set<String> affectedKeys = new HashSet<>();
+
+        for (StockReservation res : expired) {
+            MedicineBatch batch = batchRepository.findByIdForUpdate(res.getBatch().getId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Batch not found during expiry release."));
+            int qty = res.getQuantity();
+            batch.setReservedQuantity(Math.max(0, batch.getReservedQuantity() - qty));
+            batch.setAvailableQuantity(batch.getAvailableQuantity() + qty);
+            batchRepository.save(batch);
+
+            res.setStatus(ReservationStatus.RELEASED);
+            res.setReleasedAt(now);
+            reservationRepository.save(res);
+
+            recordMovement(
+                    res.getMedicine(),
+                    batch,
+                    batch.getPharmacy(),
+                    StockMovementType.RELEASED,
+                    qty,
+                    batch.getAvailableQuantity(),
+                    "RESERVATION_EXPIRY",
+                    res.getReservationKey(),
+                    "Checkout reservation expired automatically",
+                    null
+            );
+            affectedMedicines.add(res.getMedicine());
+            affectedKeys.add(res.getReservationKey());
+        }
+        affectedMedicines.forEach(this::syncMedicineTotalStock);
+        return affectedKeys;
     }
 
     private void syncMedicineTotalStock(Medicine medicine) {
