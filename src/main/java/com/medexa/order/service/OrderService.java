@@ -3,6 +3,7 @@ package com.medexa.order.service;
 import com.medexa.common.exception.BadRequestException;
 import com.medexa.common.exception.BusinessRuleException;
 import com.medexa.common.exception.ResourceNotFoundException;
+import com.medexa.delivery.service.DeliveryAssignmentService;
 import com.medexa.inventory.service.InventoryService;
 import com.medexa.order.DeliveryAssignmentStatus;
 import com.medexa.order.Order;
@@ -45,6 +46,7 @@ public class OrderService {
     private final PharmacyService pharmacyService;
     private final InventoryService inventoryService;
     private final PrescriptionService prescriptionService;
+    private final DeliveryAssignmentService deliveryAssignmentService;
 
     @Transactional(readOnly = true)
     public Page<OrderResponse> listCustomerOrders(
@@ -271,6 +273,10 @@ public class OrderService {
                         ? request.notes().trim()
                         : "Order moved to " + target.name()
         );
+        if (target == OrderStatus.READY_FOR_PICKUP) {
+            deliveryAssignmentService.initiateOrRetryAssignment(order.getId());
+            order = orderRepository.findById(order.getId()).orElse(order);
+        }
         return loadFullOrder(order, true);
     }
 

@@ -51,6 +51,12 @@ public class Pharmacy extends BaseEntity {
     @Column(name = "postal_code", nullable = false, length = 20)
     private String postalCode;
 
+    @Column(name = "latitude", precision = 9, scale = 6)
+    private java.math.BigDecimal latitude;
+
+    @Column(name = "longitude", precision = 9, scale = 6)
+    private java.math.BigDecimal longitude;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "verification_status", nullable = false, length = 40)
     @Builder.Default

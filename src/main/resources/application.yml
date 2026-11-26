@@ -159,3 +159,13 @@ app:
     key-id: ${RAZORPAY_KEY_ID:}
     key-secret: ${RAZORPAY_KEY_SECRET:}
     webhook-secret: ${RAZORPAY_WEBHOOK_SECRET:}
+  delivery:
+    acceptance-timeout-seconds: ${DELIVERY_ACCEPTANCE_TIMEOUT_SECONDS:120}
+    otp-expiry-minutes: ${DELIVERY_OTP_EXPIRY_MINUTES:15}
+    max-otp-attempts: ${DELIVERY_MAX_OTP_ATTEMPTS:3}
+    default-base-fee: ${DELIVERY_DEFAULT_BASE_FEE:40.00}
+    per-km-fee: ${DELIVERY_PER_KM_FEE:8.00}
+    max-distance-km: ${DELIVERY_MAX_DISTANCE_KM:15.0}
+    distance-weight: ${DELIVERY_DISTANCE_WEIGHT:1.0}
+    workload-weight: ${DELIVERY_WORKLOAD_WEIGHT:2.5}
+    timeout-sweep-interval-ms: ${DELIVERY_TIMEOUT_SWEEP_MS:30000}
