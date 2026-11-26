@@ -25,6 +25,18 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> handleRateLimitExceeded(
+            RateLimitExceededException ex,
+            HttpServletRequest request) {
+        log.warn("Rate limit exceeded [corrId={}, path={}]: {}",
+                CorrelationIdContext.get(), request.getRequestURI(), ex.getMessage());
+        ApiError error = ApiError.of(ex.getErrorCode().name(), ex.getMessage());
+        return ResponseEntity.status(ex.getStatus())
+                .header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()))
+                .body(ApiResponse.error(error, request.getRequestURI()));
+    }
+
     @ExceptionHandler(MedexaException.class)
     public ResponseEntity<ApiResponse<Void>> handleMedexaException(
             MedexaException ex,
